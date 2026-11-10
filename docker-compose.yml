@@ -1,0 +1,39 @@
+# Инфраструктура для локальной разработки.
+# Запуск:     docker compose up -d
+# Остановка:  docker compose down        (данные сохранятся в volume pgdata)
+# Сброс БД:   docker compose down -v     (удалит и данные)
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: newsbot
+      POSTGRES_PASSWORD: newsbot
+      POSTGRES_DB: newsbot
+    # Снаружи 5433, т.к. 5432 на этом компьютере занят локальным PostgreSQL.
+    # Внутри Docker-сети (для migrate) порт по-прежнему 5432.
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Проверка «БД готова принимать подключения» — от неё зависит migrate.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U newsbot -d newsbot"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  # Применяет SQL-миграции из ./migrations и завершается.
+  migrate:
+    image: migrate/migrate:v4.18.1
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./migrations:/migrations
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://newsbot:newsbot@postgres:5432/newsbot?sslmode=disable"
+      - "up"
+
+volumes:
+  pgdata:

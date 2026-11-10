@@ -1,0 +1,2 @@
+# Храним все текстовые файлы с переводом строки LF — одинаково на Windows, Linux и в Docker.
+* text=auto eol=lf

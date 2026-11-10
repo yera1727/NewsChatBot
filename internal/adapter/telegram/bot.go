@@ -1,0 +1,252 @@
+// Package telegram — адаптер: Telegram-бот.
+//
+// Он работает в обе стороны:
+//   - входящие команды пользователя → вызов use case'ов → ответ;
+//   - реализует usecase.Notifier, чтобы use case рассылки мог отправлять сообщения.
+//
+// Вся «телеграмная» специфика (HTML-разметка, команды, коды ошибок API) живёт здесь,
+// use case'ы о ней не знают.
+package telegram
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"html"
+	"log/slog"
+	"net/url"
+	"strconv"
+	"strings"
+
+	"github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
+
+	"PetProjectClaude/internal/domain"
+	"PetProjectClaude/internal/usecase"
+)
+
+const latestLimit = 10
+
+const helpText = `Привет! Я собираю новости из RSS-лент.
+
+/latest — последние новости
+/sources — список источников
+/subscribe N — подписаться на источник номер N
+/unsubscribe N — отписаться
+/my — мои подписки`
+
+type Bot struct {
+	api    *bot.Bot
+	token  string
+	news   *usecase.LatestNews
+	subs   *usecase.Subscriptions
+	logger *slog.Logger
+}
+
+// New создаёт бота. Библиотека сразу вызывает метод getMe,
+// так что неверный токен обнаружится здесь, при старте.
+func New(token string, news *usecase.LatestNews, subs *usecase.Subscriptions, logger *slog.Logger) (*Bot, error) {
+	b := &Bot{token: token, news: news, subs: subs, logger: logger}
+
+	api, err := bot.New(token, bot.WithDefaultHandler(b.handle))
+	if err != nil {
+		return nil, fmt.Errorf("создание бота: %w", b.cleanErr(err))
+	}
+	b.api = api
+	return b, nil
+}
+
+// Start получает сообщения от Telegram (long polling) и блокируется до отмены ctx.
+func (b *Bot) Start(ctx context.Context) {
+	b.api.Start(ctx)
+}
+
+// Notify отправляет новость в чат. Реализует usecase.Notifier.
+func (b *Bot) Notify(ctx context.Context, chatID int64, a domain.Article) error {
+	text := fmt.Sprintf("<b>%s</b>\n\n<a href=\"%s\">Читать на %s</a>",
+		html.EscapeString(a.Title), html.EscapeString(a.Link), sourceName(a.Source))
+
+	err := b.send(ctx, chatID, text, true)
+	if errors.Is(err, bot.ErrorForbidden) {
+		// 403 от Telegram = пользователь заблокировал бота.
+		// Переводим ошибку библиотеки в ошибку бизнес-логики.
+		return fmt.Errorf("%w: %w", usecase.ErrChatUnavailable, err)
+	}
+	return err
+}
+
+// handle вызывается библиотекой на каждое входящее обновление.
+func (b *Bot) handle(ctx context.Context, _ *bot.Bot, update *models.Update) {
+	if update.Message == nil || update.Message.Text == "" {
+		return // нас интересуют только текстовые сообщения
+	}
+	chatID := update.Message.Chat.ID
+	cmd, arg := parseCommand(update.Message.Text)
+
+	var (
+		reply string
+		err   error
+	)
+	switch cmd {
+	case "/start", "/help":
+		reply = helpText
+	case "/latest":
+		reply, err = b.latest(ctx)
+	case "/sources":
+		reply, err = b.sources(ctx)
+	case "/subscribe":
+		reply, err = b.subscribe(ctx, chatID, arg)
+	case "/unsubscribe":
+		reply, err = b.unsubscribe(ctx, chatID, arg)
+	case "/my":
+		reply, err = b.my(ctx, chatID)
+	default:
+		reply = "Не знаю такой команды. Список команд: /help"
+	}
+
+	if err != nil {
+		b.logger.Error("обработка команды", "cmd", cmd, "chat", chatID, "err", err)
+		reply = "Что-то пошло не так, попробуйте позже."
+	}
+	if err := b.send(ctx, chatID, reply, false); err != nil {
+		b.logger.Error("отправка ответа", "chat", chatID, "err", err)
+	}
+}
+
+func (b *Bot) latest(ctx context.Context) (string, error) {
+	articles, err := b.news.Run(ctx, latestLimit)
+	if err != nil {
+		return "", err
+	}
+	if len(articles) == 0 {
+		return "Новостей пока нет — fetcher ещё ничего не собрал.", nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString("<b>Последние новости</b>\n\n")
+	for i, a := range articles {
+		fmt.Fprintf(&sb, "%d. <a href=\"%s\">%s</a> · %s\n",
+			i+1, html.EscapeString(a.Link), html.EscapeString(a.Title), sourceName(a.Source))
+	}
+	return sb.String(), nil
+}
+
+func (b *Bot) sources(ctx context.Context) (string, error) {
+	sources, err := b.subs.Sources(ctx)
+	if err != nil {
+		return "", err
+	}
+	if len(sources) == 0 {
+		return "Источников пока нет.", nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString("<b>Источники</b>\n\n")
+	for i, s := range sources {
+		fmt.Fprintf(&sb, "%d. %s\n", i+1, sourceName(s))
+	}
+	sb.WriteString("\nПодписаться: /subscribe 1")
+	return sb.String(), nil
+}
+
+func (b *Bot) subscribe(ctx context.Context, chatID int64, arg string) (string, error) {
+	n, err := strconv.Atoi(arg)
+	if err != nil {
+		return "Укажите номер источника из /sources, например: /subscribe 1", nil
+	}
+	source, err := b.subs.Subscribe(ctx, chatID, n)
+	if errors.Is(err, usecase.ErrUnknownSource) {
+		return fmt.Sprintf("Нет источника с номером %d. Список: /sources", n), nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("✅ Вы подписаны на %s. Новые статьи будут приходить сюда.", sourceName(source)), nil
+}
+
+func (b *Bot) unsubscribe(ctx context.Context, chatID int64, arg string) (string, error) {
+	n, err := strconv.Atoi(arg)
+	if err != nil {
+		return "Укажите номер источника из /sources, например: /unsubscribe 1", nil
+	}
+	source, err := b.subs.Unsubscribe(ctx, chatID, n)
+	if errors.Is(err, usecase.ErrUnknownSource) {
+		return fmt.Sprintf("Нет источника с номером %d. Список: /sources", n), nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Вы отписались от %s.", sourceName(source)), nil
+}
+
+func (b *Bot) my(ctx context.Context, chatID int64) (string, error) {
+	sources, err := b.subs.List(ctx, chatID)
+	if err != nil {
+		return "", err
+	}
+	if len(sources) == 0 {
+		return "Вы пока ни на что не подписаны. Список источников: /sources", nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString("<b>Ваши подписки</b>\n\n")
+	for _, s := range sources {
+		fmt.Fprintf(&sb, "• %s\n", sourceName(s))
+	}
+	return sb.String(), nil
+}
+
+// send отправляет HTML-сообщение. preview — показывать ли превью ссылки.
+func (b *Bot) send(ctx context.Context, chatID int64, text string, preview bool) error {
+	params := &bot.SendMessageParams{
+		ChatID:    chatID,
+		Text:      text,
+		ParseMode: models.ParseModeHTML,
+	}
+	if !preview {
+		params.LinkPreviewOptions = &models.LinkPreviewOptions{IsDisabled: bot.True()}
+	}
+	_, err := b.api.SendMessage(ctx, params)
+	return b.cleanErr(err)
+}
+
+// parseCommand разбирает "/subscribe@MyBot 2" → ("/subscribe", "2").
+// Суффикс @ИмяБота Telegram добавляет к командам в групповых чатах.
+func parseCommand(text string) (cmd, arg string) {
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return "", ""
+	}
+	cmd, _, _ = strings.Cut(fields[0], "@")
+	if len(fields) > 1 {
+		arg = fields[1]
+	}
+	return strings.ToLower(cmd), arg
+}
+
+// sourceName превращает URL ленты в короткое имя: "https://habr.com/ru/rss/..." → "habr.com".
+func sourceName(source string) string {
+	u, err := url.Parse(source)
+	if err != nil || u.Host == "" {
+		return html.EscapeString(source)
+	}
+	return html.EscapeString(strings.TrimPrefix(u.Host, "www."))
+}
+
+// cleanErr убирает токен из текста ошибки. Сетевые ошибки net/http содержат
+// полный URL запроса (https://api.telegram.org/bot<ТОКЕН>/...) — и токен утёк бы в логи.
+func (b *Bot) cleanErr(err error) error {
+	if err == nil || !strings.Contains(err.Error(), b.token) {
+		return err
+	}
+	return &redactedError{msg: strings.ReplaceAll(err.Error(), b.token, "<TOKEN>"), err: err}
+}
+
+// redactedError подменяет текст ошибки, но сохраняет цепочку для errors.Is.
+type redactedError struct {
+	msg string
+	err error
+}
+
+func (e *redactedError) Error() string { return e.msg }
+func (e *redactedError) Unwrap() error { return e.err }
