@@ -48,11 +48,13 @@ func main() {
 	fetcher := feedrouter.New(rss.NewClient(cfg.RequestTimeout), tgchannel.NewClient(cfg.RequestTimeout))
 	repo := postgres.NewRepository(pool)
 
-	// Начальное заполнение (seed): ленты из конфига добавляются в таблицу sources,
-	// если их там ещё нет. Дальше fetcher работает со списком из БД.
-	if err := repo.EnsureSources(ctx, cfg.Feeds); err != nil {
-		logger.Error("добавление источников из конфига", "err", err)
-		os.Exit(1)
+	// Начальное заполнение (seed): если в конфиге (FEEDS) заданы ленты, они добавляются
+	// в таблицу sources, если их там ещё нет. Дальше fetcher работает со списком из БД.
+	if len(cfg.Feeds) > 0 {
+		if err := repo.EnsureSources(ctx, cfg.Feeds); err != nil {
+			logger.Error("добавление источников из конфига", "err", err)
+			os.Exit(1)
+		}
 	}
 
 	// Use case получает адаптеры через интерфейсы. repo реализует сразу два из них.

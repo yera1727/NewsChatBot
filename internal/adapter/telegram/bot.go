@@ -214,7 +214,7 @@ func (b *Bot) my(ctx context.Context, chatID int64) (string, error) {
 func (b *Bot) add(ctx context.Context, chatID int64, arg string) (string, error) {
 	if arg == "" {
 		return "Пришлите ссылку на RSS-ленту или Telegram-канал, например:\n" +
-			"/add https://habr.com/ru/rss/news/\n/add @durov", nil
+			"/add @durov\n/add https://example.com/rss", nil
 	}
 
 	// «@канал» — привычная в Telegram запись, превращаем её в ссылку.

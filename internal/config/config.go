@@ -18,14 +18,9 @@ type Config struct {
 	DatabaseURL    string        // строка подключения к PostgreSQL
 	FetchInterval  time.Duration // fetcher: как часто опрашивать ленты
 	RequestTimeout time.Duration // fetcher: таймаут на скачивание одной ленты
-	Feeds          []string      // fetcher: список RSS-лент
+	Feeds          []string      // fetcher: ленты для начального заполнения БД (может быть пустым)
 	TelegramToken  string        // bot: токен от @BotFather
 	NotifyInterval time.Duration // bot: как часто проверять, есть ли что разослать
-}
-
-var defaultFeeds = []string{
-	"https://habr.com/ru/rss/articles/?fl=ru",
-	"https://lenta.ru/rss/news",
 }
 
 // Load возвращает конфиг: значения по умолчанию, переопределённые переменными окружения.
@@ -33,7 +28,8 @@ var defaultFeeds = []string{
 //	DATABASE_URL    — по умолчанию локальная БД из docker-compose.yml
 //	FETCH_INTERVAL  — например "5m", "30s" (по умолчанию 5m)
 //	REQUEST_TIMEOUT — например "10s" (по умолчанию 10s)
-//	FEEDS           — ленты через запятую
+//	FEEDS           — необязательно: ленты через запятую, которые fetcher добавит
+//	                  в БД при старте. Обычно источники добавляются через /add в боте.
 //	TELEGRAM_TOKEN  — токен бота
 //	NOTIFY_INTERVAL — например "30s" (по умолчанию 30s)
 //
@@ -46,7 +42,6 @@ func Load() (Config, error) {
 		DatabaseURL:    "postgres://newsbot:newsbot@localhost:5433/newsbot?sslmode=disable",
 		FetchInterval:  5 * time.Minute,
 		RequestTimeout: 10 * time.Second,
-		Feeds:          defaultFeeds,
 		TelegramToken:  strings.TrimSpace(os.Getenv("TELEGRAM_TOKEN")),
 		NotifyInterval: 30 * time.Second,
 	}

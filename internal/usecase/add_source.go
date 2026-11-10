@@ -85,7 +85,7 @@ func (uc *AddSource) Run(ctx context.Context, chatID int64, rawURL string) (doma
 }
 
 // normalizeFeedURL проверяет, что строка — абсолютная http(s)-ссылка.
-// Ссылку без схемы («t.me/durov», «habr.com/rss») дополняет до https://.
+// Ссылку без схемы («t.me/durov», «example.com/rss») дополняет до https://.
 func normalizeFeedURL(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if !strings.Contains(raw, "://") {

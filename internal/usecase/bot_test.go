@@ -115,8 +115,8 @@ func TestLatestNews_ForSubscribedChat(t *testing.T) {
 
 func testSources() *fakeSourceReader {
 	return &fakeSourceReader{byID: map[int64]domain.Source{
-		1: {ID: 1, Title: "Хабр", Active: true},
-		2: {ID: 2, Title: "Lenta.ru", Active: true},
+		1: {ID: 1, Title: "Канал А", Active: true},
+		2: {ID: 2, Title: "Канал Б", Active: true},
 		3: {ID: 3, Title: "Закрытая лента", Active: false},
 	}}
 }
@@ -129,8 +129,8 @@ func TestSubscriptions_SubscribeByID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("неожиданная ошибка: %v", err)
 	}
-	if source.Title != "Lenta.ru" {
-		t.Errorf("источник 2 должен быть Lenta.ru, получили %q", source.Title)
+	if source.Title != "Канал Б" {
+		t.Errorf("источник 2 должен быть «Канал Б», получили %q", source.Title)
 	}
 	if got := repo.subscribed[42]; len(got) != 1 || got[0] != 2 {
 		t.Errorf("в хранилище должна быть подписка на источник 2, получили %v", got)
