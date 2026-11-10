@@ -43,8 +43,12 @@ func (f *fakeSubRepo) UnsubscribeAll(_ context.Context, chatID int64) error {
 	f.unsubscribeAll = append(f.unsubscribeAll, chatID)
 	return nil
 }
-func (f *fakeSubRepo) ListByChat(context.Context, int64) ([]domain.Source, error) {
-	return nil, nil
+func (f *fakeSubRepo) ListByChat(_ context.Context, chatID int64) ([]domain.Source, error) {
+	var list []domain.Source
+	for _, id := range f.subscribed[chatID] {
+		list = append(list, domain.Source{ID: id})
+	}
+	return list, nil
 }
 func (f *fakeSubRepo) Pending(context.Context, int) ([]domain.Delivery, error) {
 	return f.pending, nil
@@ -66,6 +70,45 @@ func (f *fakeNotifier) Notify(_ context.Context, chatID int64, a domain.Article)
 	}
 	f.sent = append(f.sent, a.ID)
 	return nil
+}
+
+// fakeArticleReader запоминает, для какого чата запросили новости.
+type fakeArticleReader struct {
+	articles  []domain.Article
+	askedChat int64
+}
+
+func (f *fakeArticleReader) LatestForChat(_ context.Context, chatID int64, _ int) ([]domain.Article, error) {
+	f.askedChat = chatID
+	return f.articles, nil
+}
+
+// --- тесты последних новостей ---
+
+func TestLatestNews_NoSubscriptions(t *testing.T) {
+	reader := &fakeArticleReader{}
+	_, err := NewLatestNews(reader, &fakeSubRepo{}).Run(context.Background(), 42, 10)
+
+	if !errors.Is(err, ErrNoSubscriptions) {
+		t.Errorf("без подписок ожидали ErrNoSubscriptions, получили %v", err)
+	}
+	if reader.askedChat != 0 {
+		t.Error("без подписок статьи запрашивать незачем")
+	}
+}
+
+func TestLatestNews_ForSubscribedChat(t *testing.T) {
+	reader := &fakeArticleReader{articles: []domain.Article{{ID: 1}, {ID: 2}}}
+	subs := &fakeSubRepo{}
+	_ = subs.Subscribe(context.Background(), 42, 7)
+
+	got, err := NewLatestNews(reader, subs).Run(context.Background(), 42, 10)
+	if err != nil {
+		t.Fatalf("неожиданная ошибка: %v", err)
+	}
+	if reader.askedChat != 42 || len(got) != 2 {
+		t.Errorf("ожидали 2 статьи для чата 42, получили %d для чата %d", len(got), reader.askedChat)
+	}
 }
 
 // --- тесты подписок ---

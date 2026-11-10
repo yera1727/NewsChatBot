@@ -28,7 +28,7 @@ const latestLimit = 10
 
 const helpText = `Привет! Я собираю новости из RSS-лент.
 
-/latest — последние новости
+/latest — последние новости из ваших подписок
 /sources — список источников
 /subscribe N — подписаться на источник номер N
 /unsubscribe N — отписаться
@@ -98,7 +98,7 @@ func (b *Bot) handle(ctx context.Context, _ *bot.Bot, update *models.Update) {
 	case "/start", "/help":
 		reply = helpText
 	case "/latest":
-		reply, err = b.latest(ctx)
+		reply, err = b.latest(ctx, chatID)
 	case "/sources":
 		reply, err = b.sources(ctx)
 	case "/subscribe":
@@ -122,17 +122,21 @@ func (b *Bot) handle(ctx context.Context, _ *bot.Bot, update *models.Update) {
 	}
 }
 
-func (b *Bot) latest(ctx context.Context) (string, error) {
-	articles, err := b.uc.Latest.Run(ctx, latestLimit)
+func (b *Bot) latest(ctx context.Context, chatID int64) (string, error) {
+	articles, err := b.uc.Latest.Run(ctx, chatID, latestLimit)
+	if errors.Is(err, usecase.ErrNoSubscriptions) {
+		return "Вы пока ни на что не подписаны, поэтому показывать нечего.\n\n" +
+			"Список источников: /sources\nДобавить свой: /add @канал", nil
+	}
 	if err != nil {
 		return "", err
 	}
 	if len(articles) == 0 {
-		return "Новостей пока нет — fetcher ещё ничего не собрал.", nil
+		return "В ваших подписках пока нет новостей.", nil
 	}
 
 	var sb strings.Builder
-	sb.WriteString("<b>Последние новости</b>\n\n")
+	sb.WriteString("<b>Последние новости из ваших подписок</b>\n\n")
 	for i, a := range articles {
 		fmt.Fprintf(&sb, "%d. <a href=\"%s\">%s</a> · %s\n",
 			i+1, html.EscapeString(a.Link), html.EscapeString(a.Title), sourceName(a.Source))

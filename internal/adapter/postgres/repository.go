@@ -75,14 +75,16 @@ func (r *Repository) Save(ctx context.Context, articles []domain.Article) (int, 
 const articleColumns = `a.id, a.title, a.link, a.description, a.published_at,
 	s.id, s.url, s.title, s.active`
 
-// Latest возвращает самые свежие статьи.
-func (r *Repository) Latest(ctx context.Context, limit int) ([]domain.Article, error) {
+// LatestForChat возвращает самые свежие статьи из источников, на которые подписан чат.
+// JOIN с subscriptions оставляет только статьи «своих» источников.
+func (r *Repository) LatestForChat(ctx context.Context, chatID int64, limit int) ([]domain.Article, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT `+articleColumns+`
 		FROM articles a
-		JOIN sources s ON s.id = a.source_id
+		JOIN sources s         ON s.id = a.source_id
+		JOIN subscriptions sub ON sub.source_id = a.source_id AND sub.chat_id = $1
 		ORDER BY a.published_at DESC NULLS LAST
-		LIMIT $1`, limit)
+		LIMIT $2`, chatID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("последние статьи: %w", err)
 	}
