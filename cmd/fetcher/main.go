@@ -42,13 +42,20 @@ func main() {
 	defer pool.Close()
 
 	// Адаптеры (внешний слой).
-	source := rss.NewClient(cfg.RequestTimeout)
+	fetcher := rss.NewClient(cfg.RequestTimeout)
 	repo := postgres.NewRepository(pool)
 
-	// Use case получает адаптеры через интерфейсы.
-	fetchNews := usecase.NewFetchNews(source, repo, cfg.Feeds)
+	// Начальное заполнение (seed): ленты из конфига добавляются в таблицу sources,
+	// если их там ещё нет. Дальше fetcher работает со списком из БД.
+	if err := repo.EnsureSources(ctx, cfg.Feeds); err != nil {
+		logger.Error("добавление источников из конфига", "err", err)
+		os.Exit(1)
+	}
 
-	logger.Info("fetcher запущен", "interval", cfg.FetchInterval, "feeds", len(cfg.Feeds))
+	// Use case получает адаптеры через интерфейсы. repo реализует сразу два из них.
+	fetchNews := usecase.NewFetchNews(fetcher, repo, repo)
+
+	logger.Info("fetcher запущен", "interval", cfg.FetchInterval)
 
 	// Один цикл сбора. Таймаут = интервал: следующий цикл не должен начаться,
 	// пока не закончился предыдущий.

@@ -1,5 +1,5 @@
 // Package rss — адаптер: получает новости из RSS-лент.
-// Реализует интерфейс usecase.FeedSource.
+// Реализует интерфейс usecase.FeedFetcher.
 package rss
 
 import (
@@ -7,6 +7,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"PetProjectClaude/internal/domain"
@@ -23,6 +24,7 @@ type rssItem struct {
 
 type rssFeed struct {
 	Channel struct {
+		Title string    `xml:"title"`
 		Items []rssItem `xml:"item"`
 	} `xml:"channel"`
 }
@@ -36,41 +38,42 @@ func NewClient(timeout time.Duration) *Client {
 	return &Client{http: &http.Client{Timeout: timeout}}
 }
 
-// Fetch скачивает ленту и переводит её в доменные Article.
-func (c *Client) Fetch(ctx context.Context, feedURL string) ([]domain.Article, error) {
+// Fetch скачивает ленту и переводит её в доменную модель.
+// Реализует usecase.FeedFetcher. Про источники в нашей БД адаптер ничего не знает —
+// привязку статей к источнику делает use case.
+func (c *Client) Fetch(ctx context.Context, feedURL string) (domain.Feed, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, feedURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("создание запроса: %w", err)
+		return domain.Feed{}, fmt.Errorf("создание запроса: %w", err)
 	}
 	req.Header.Set("User-Agent", "newsbot/0.1") // некоторые сайты без него отказывают
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("запрос %s: %w", feedURL, err)
+		return domain.Feed{}, fmt.Errorf("запрос %s: %w", feedURL, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("запрос %s: статус %s", feedURL, resp.Status)
+		return domain.Feed{}, fmt.Errorf("запрос %s: статус %s", feedURL, resp.Status)
 	}
 
 	var feed rssFeed
 	if err := xml.NewDecoder(resp.Body).Decode(&feed); err != nil {
-		return nil, fmt.Errorf("разбор XML %s: %w", feedURL, err)
+		return domain.Feed{}, fmt.Errorf("разбор XML %s: %w", feedURL, err)
 	}
 
 	// Преобразуем формат RSS → доменную модель.
 	articles := make([]domain.Article, 0, len(feed.Channel.Items))
 	for _, it := range feed.Channel.Items {
 		articles = append(articles, domain.Article{
-			Source:      feedURL,
-			Title:       it.Title,
-			Link:        it.Link,
+			Title:       strings.TrimSpace(it.Title),
+			Link:        strings.TrimSpace(it.Link),
 			Description: it.Description,
 			PublishedAt: parseDate(it.PubDate),
 		})
 	}
-	return articles, nil
+	return domain.Feed{Title: strings.TrimSpace(feed.Channel.Title), Articles: articles}, nil
 }
 
 // parseDate пробует форматы дат, которые встречаются в RSS.

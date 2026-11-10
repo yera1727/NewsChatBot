@@ -10,39 +10,46 @@ import (
 
 // --- фейки ---
 
-type fakeReader struct {
-	sources []string
+// fakeSourceReader хранит источники по ID, как таблица sources.
+type fakeSourceReader struct {
+	byID map[int64]domain.Source
 }
 
-func (f *fakeReader) Latest(context.Context, int) ([]domain.Article, error) { return nil, nil }
-func (f *fakeReader) Sources(context.Context) ([]string, error)             { return f.sources, nil }
+func (f *fakeSourceReader) Sources(context.Context) ([]domain.Source, error) { return nil, nil }
+func (f *fakeSourceReader) SourceByID(_ context.Context, id int64) (domain.Source, error) {
+	src, ok := f.byID[id]
+	if !ok {
+		return domain.Source{}, ErrUnknownSource
+	}
+	return src, nil
+}
 
 type fakeSubRepo struct {
-	subscribed     map[int64][]string
+	subscribed     map[int64][]int64 // chatID → id источников
 	pending        []domain.Delivery
 	delivered      []int64 // id доставленных статей
 	unsubscribeAll []int64 // чаты, отписанные целиком
 }
 
-func (f *fakeSubRepo) Subscribe(_ context.Context, chatID int64, source string) error {
+func (f *fakeSubRepo) Subscribe(_ context.Context, chatID, sourceID int64) error {
 	if f.subscribed == nil {
-		f.subscribed = make(map[int64][]string)
+		f.subscribed = make(map[int64][]int64)
 	}
-	f.subscribed[chatID] = append(f.subscribed[chatID], source)
+	f.subscribed[chatID] = append(f.subscribed[chatID], sourceID)
 	return nil
 }
-func (f *fakeSubRepo) Unsubscribe(context.Context, int64, string) error { return nil }
+func (f *fakeSubRepo) Unsubscribe(context.Context, int64, int64) error { return nil }
 func (f *fakeSubRepo) UnsubscribeAll(_ context.Context, chatID int64) error {
 	f.unsubscribeAll = append(f.unsubscribeAll, chatID)
 	return nil
 }
-func (f *fakeSubRepo) ListByChat(_ context.Context, chatID int64) ([]string, error) {
-	return f.subscribed[chatID], nil
+func (f *fakeSubRepo) ListByChat(context.Context, int64) ([]domain.Source, error) {
+	return nil, nil
 }
 func (f *fakeSubRepo) Pending(context.Context, int) ([]domain.Delivery, error) {
 	return f.pending, nil
 }
-func (f *fakeSubRepo) MarkDelivered(_ context.Context, _ int64, _ string, articleID int64) error {
+func (f *fakeSubRepo) MarkDelivered(_ context.Context, _, _, articleID int64) error {
 	f.delivered = append(f.delivered, articleID)
 	return nil
 }
@@ -63,30 +70,47 @@ func (f *fakeNotifier) Notify(_ context.Context, chatID int64, a domain.Article)
 
 // --- тесты подписок ---
 
-func TestSubscriptions_SubscribeByNumber(t *testing.T) {
+func testSources() *fakeSourceReader {
+	return &fakeSourceReader{byID: map[int64]domain.Source{
+		1: {ID: 1, Title: "Хабр", Active: true},
+		2: {ID: 2, Title: "Lenta.ru", Active: true},
+		3: {ID: 3, Title: "Закрытая лента", Active: false},
+	}}
+}
+
+func TestSubscriptions_SubscribeByID(t *testing.T) {
 	repo := &fakeSubRepo{}
-	uc := NewSubscriptions(&fakeReader{sources: []string{"habr", "lenta"}}, repo)
+	uc := NewSubscriptions(testSources(), repo)
 
 	source, err := uc.Subscribe(context.Background(), 42, 2)
 	if err != nil {
 		t.Fatalf("неожиданная ошибка: %v", err)
 	}
-	if source != "lenta" {
-		t.Errorf("номер 2 должен быть lenta, получили %q", source)
+	if source.Title != "Lenta.ru" {
+		t.Errorf("источник 2 должен быть Lenta.ru, получили %q", source.Title)
 	}
-	if got := repo.subscribed[42]; len(got) != 1 || got[0] != "lenta" {
-		t.Errorf("в хранилище должна быть подписка на lenta, получили %v", got)
+	if got := repo.subscribed[42]; len(got) != 1 || got[0] != 2 {
+		t.Errorf("в хранилище должна быть подписка на источник 2, получили %v", got)
 	}
 }
 
-func TestSubscriptions_UnknownNumber(t *testing.T) {
-	uc := NewSubscriptions(&fakeReader{sources: []string{"habr"}}, &fakeSubRepo{})
+func TestSubscriptions_UnknownOrInactiveSource(t *testing.T) {
+	uc := NewSubscriptions(testSources(), &fakeSubRepo{})
 
 	// Табличный тест — идиома Go: один код проверки, много входных данных.
-	for _, n := range []int{0, -1, 2, 100} {
-		if _, err := uc.Subscribe(context.Background(), 42, n); !errors.Is(err, ErrUnknownSource) {
-			t.Errorf("номер %d: ожидали ErrUnknownSource, получили %v", n, err)
+	// 3 — существует, но неактивен; на него тоже нельзя подписаться.
+	for _, id := range []int64{0, -1, 3, 100} {
+		if _, err := uc.Subscribe(context.Background(), 42, id); !errors.Is(err, ErrUnknownSource) {
+			t.Errorf("источник %d: ожидали ErrUnknownSource, получили %v", id, err)
 		}
+	}
+}
+
+func TestSubscriptions_CanUnsubscribeFromInactive(t *testing.T) {
+	uc := NewSubscriptions(testSources(), &fakeSubRepo{})
+
+	if _, err := uc.Unsubscribe(context.Background(), 42, 3); err != nil {
+		t.Errorf("от неактивного источника отписаться можно, получили ошибку %v", err)
 	}
 }
 

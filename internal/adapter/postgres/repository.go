@@ -1,6 +1,9 @@
-// Package postgres — адаптер: хранит новости в PostgreSQL.
-// Реализует интерфейсы usecase.ArticleRepository, usecase.ArticleReader
-// и usecase.SubscriptionRepository (последний — в файле subscriptions.go).
+// Package postgres — адаптер: хранит данные в PostgreSQL.
+// Один Repository реализует несколько интерфейсов use case'ов, код разложен по файлам:
+//
+//	repository.go    — статьи        (usecase.ArticleRepository, usecase.ArticleReader)
+//	sources.go       — источники     (usecase.SourceRepository, usecase.SourceReader)
+//	subscriptions.go — подписки      (usecase.SubscriptionRepository)
 package postgres
 
 import (
@@ -28,8 +31,8 @@ func NewRepository(pool *pgxpool.Pool) *Repository {
 //
 // ON CONFLICT (link) DO NOTHING — если статья с такой ссылкой уже есть, тихо пропускаем её.
 const insertArticles = `
-INSERT INTO articles (source, title, link, description, published_at)
-SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::timestamptz[])
+INSERT INTO articles (source_id, title, link, description, published_at)
+SELECT * FROM unnest($1::bigint[], $2::text[], $3::text[], $4::text[], $5::timestamptz[])
 ON CONFLICT (link) DO NOTHING`
 
 // Save сохраняет статьи и возвращает, сколько из них оказались новыми.
@@ -39,14 +42,14 @@ func (r *Repository) Save(ctx context.Context, articles []domain.Article) (int, 
 	}
 
 	n := len(articles)
-	sources := make([]string, 0, n)
+	sourceIDs := make([]int64, 0, n)
 	titles := make([]string, 0, n)
 	links := make([]string, 0, n)
 	descriptions := make([]string, 0, n)
 	published := make([]*time.Time, 0, n) // указатель, чтобы передать NULL вместо «нулевой» даты
 
 	for _, a := range articles {
-		sources = append(sources, a.Source)
+		sourceIDs = append(sourceIDs, a.Source.ID)
 		titles = append(titles, a.Title)
 		links = append(links, a.Link)
 		descriptions = append(descriptions, a.Description)
@@ -59,7 +62,7 @@ func (r *Repository) Save(ctx context.Context, articles []domain.Article) (int, 
 		}
 	}
 
-	tag, err := r.pool.Exec(ctx, insertArticles, sources, titles, links, descriptions, published)
+	tag, err := r.pool.Exec(ctx, insertArticles, sourceIDs, titles, links, descriptions, published)
 	if err != nil {
 		return 0, fmt.Errorf("вставка статей: %w", err)
 	}
@@ -67,12 +70,18 @@ func (r *Repository) Save(ctx context.Context, articles []domain.Article) (int, 
 	return int(tag.RowsAffected()), nil
 }
 
+// articleColumns — колонки, которые читает scanArticle. Запрос должен соединять
+// articles (псевдоним a) с sources (псевдоним s).
+const articleColumns = `a.id, a.title, a.link, a.description, a.published_at,
+	s.id, s.url, s.title, s.active`
+
 // Latest возвращает самые свежие статьи.
 func (r *Repository) Latest(ctx context.Context, limit int) ([]domain.Article, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, source, title, link, description, published_at
-		FROM articles
-		ORDER BY published_at DESC NULLS LAST
+		SELECT `+articleColumns+`
+		FROM articles a
+		JOIN sources s ON s.id = a.source_id
+		ORDER BY a.published_at DESC NULLS LAST
 		LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("последние статьи: %w", err)
@@ -90,26 +99,18 @@ func (r *Repository) Latest(ctx context.Context, limit int) ([]domain.Article, e
 	return articles, rows.Err() // rows.Err() — ошибка, случившаяся во время чтения строк
 }
 
-// Sources возвращает все источники, отсортированные по алфавиту.
-// Порядок важен: пользователь выбирает источник по номеру в этом списке.
-func (r *Repository) Sources(ctx context.Context) ([]string, error) {
-	rows, err := r.pool.Query(ctx, `SELECT DISTINCT source FROM articles ORDER BY source`)
-	if err != nil {
-		return nil, fmt.Errorf("список источников: %w", err)
-	}
-	// pgx.CollectRows читает все строки; RowTo[string] — каждую строку в string.
-	return pgx.CollectRows(rows, pgx.RowTo[string])
-}
-
-// scanArticle читает статью из строки результата. Первыми колонками у
-// вызывающего запроса должны идти: id, source, title, link, description, published_at.
+// scanArticle читает статью (колонки articleColumns) и, если переданы, дополнительные колонки.
 // pgx.Row — общий интерфейс и для одной строки, и для курсора rows.
 func scanArticle(row pgx.Row, extra ...any) (domain.Article, error) {
 	var (
 		a         domain.Article
 		published *time.Time // в БД может быть NULL
 	)
-	dest := append([]any{&a.ID, &a.Source, &a.Title, &a.Link, &a.Description, &published}, extra...)
+	dest := append([]any{
+		&a.ID, &a.Title, &a.Link, &a.Description, &published,
+		&a.Source.ID, &a.Source.URL, &a.Source.Title, &a.Source.Active,
+	}, extra...)
+
 	if err := row.Scan(dest...); err != nil {
 		return domain.Article{}, fmt.Errorf("чтение статьи: %w", err)
 	}
