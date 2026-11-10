@@ -1,26 +1,35 @@
-# Инфраструктура для локальной разработки.
-# Запуск:     docker compose up -d
-# Остановка:  docker compose down        (данные сохранятся в volume pgdata)
-# Сброс БД:   docker compose down -v     (удалит и данные)
+# Весь проект одной командой.
+#
+# Запуск / обновление:  docker compose up -d --build
+# Логи:                 docker compose logs -f bot fetcher
+# Остановка:            docker compose down        (данные БД сохранятся в volume pgdata)
+# Сброс БД:             docker compose down -v     (удалит и данные)
+#
+# Настройки и секреты берутся из файла .env рядом с этим файлом (шаблон — .env.example).
+# Запись ${VAR:-default} значит: взять VAR из .env, а если её нет — default.
+
+x-db-url: &db-url postgres://newsbot:${POSTGRES_PASSWORD:-newsbot}@postgres:5432/newsbot?sslmode=disable
+
 services:
   postgres:
     image: postgres:17-alpine
     environment:
       POSTGRES_USER: newsbot
-      POSTGRES_PASSWORD: newsbot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-newsbot}
       POSTGRES_DB: newsbot
+    # Порт открыт только для этого компьютера (127.0.0.1), не для всей сети:
+    # на сервере база не должна быть доступна из интернета.
     # Снаружи 5433, т.к. 5432 на этом компьютере занят локальным PostgreSQL.
-    # Внутри Docker-сети (для migrate) порт по-прежнему 5432.
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-    # Проверка «БД готова принимать подключения» — от неё зависит migrate.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U newsbot -d newsbot"]
       interval: 2s
       timeout: 3s
       retries: 15
+    restart: unless-stopped
 
   # Применяет SQL-миграции из ./migrations и завершается.
   migrate:
@@ -30,10 +39,38 @@ services:
         condition: service_healthy
     volumes:
       - ./migrations:/migrations
-    command:
-      - "-path=/migrations"
-      - "-database=postgres://newsbot:newsbot@postgres:5432/newsbot?sslmode=disable"
-      - "up"
+    command: ["-path=/migrations", "-database", *db-url, "up"]
+
+  fetcher:
+    build: .
+    image: newsbot:latest
+    command: ["fetcher"]
+    env_file: .env
+    environment:
+      DATABASE_URL: *db-url # внутри Docker-сети база доступна по имени сервиса «postgres»
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully # стартуем только после миграций
+    # Перезапускать при падении и после перезагрузки компьютера/сервера,
+    # пока контейнер не остановлен вручную.
+    restart: unless-stopped
+
+  bot:
+    image: newsbot:latest # тот же образ, что у fetcher, — собирается один раз
+    command: ["bot"]
+    env_file: .env
+    environment:
+      DATABASE_URL: *db-url
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      fetcher:
+        condition: service_started # чтобы образ newsbot:latest был собран до запуска бота
+    restart: unless-stopped
 
 volumes:
   pgdata:
