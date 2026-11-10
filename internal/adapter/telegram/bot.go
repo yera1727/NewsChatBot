@@ -33,7 +33,7 @@ const helpText = `Привет! Я собираю новости из RSS-лен
 /subscribe N — подписаться на источник номер N
 /unsubscribe N — отписаться
 /my — мои подписки
-/add ссылка — добавить свою RSS-ленту`
+/add ссылка — добавить RSS-ленту или Telegram-канал (@имя)`
 
 // UseCases — сценарии, которые вызывает бот. Собраны в структуру, чтобы
 // конструктор не разрастался с каждой новой командой.
@@ -209,7 +209,13 @@ func (b *Bot) my(ctx context.Context, chatID int64) (string, error) {
 
 func (b *Bot) add(ctx context.Context, chatID int64, arg string) (string, error) {
 	if arg == "" {
-		return "Пришлите ссылку на RSS-ленту, например:\n/add https://habr.com/ru/rss/news/", nil
+		return "Пришлите ссылку на RSS-ленту или Telegram-канал, например:\n" +
+			"/add https://habr.com/ru/rss/news/\n/add @durov", nil
+	}
+
+	// «@канал» — привычная в Telegram запись, превращаем её в ссылку.
+	if name, ok := strings.CutPrefix(arg, "@"); ok {
+		arg = "https://t.me/" + name
 	}
 
 	src, created, err := b.uc.AddSource.Run(ctx, chatID, arg)
@@ -219,8 +225,9 @@ func (b *Bot) add(ctx context.Context, chatID int64, arg string) (string, error)
 	case errors.Is(err, usecase.ErrNotAFeed):
 		// Причину пишем в лог, а пользователю — понятное объяснение.
 		b.logger.Info("не удалось добавить ленту", "chat", chatID, "url", arg, "err", err)
-		return "Не получилось прочитать RSS по этой ссылке. Проверьте, что это именно RSS-лента, " +
-			"а не обычная страница сайта (у многих сайтов лента лежит по адресу вида /rss или /feed).", nil
+		return "Не получилось прочитать ленту по этой ссылке.\n\n" +
+			"• Для сайта нужна именно RSS-лента, а не обычная страница (часто она лежит по адресу вида /rss или /feed).\n" +
+			"• Для Telegram подходят только публичные каналы с постами: @имя или t.me/имя.", nil
 	case errors.Is(err, usecase.ErrSourceDisabled):
 		return "Этот источник отключён и недоступен для подписки.", nil
 	case err != nil:

@@ -74,6 +74,26 @@ func TestAddSource_ExistingSource_OnlySubscribed(t *testing.T) {
 	}
 }
 
+// Адаптер вернул канонический адрес — источник должен храниться под ним.
+func TestAddSource_UsesCanonicalURL_AndAddsScheme(t *testing.T) {
+	fetcher := &fakeFetcher{feeds: map[string]domain.Feed{
+		"https://t.me/durov": { // ссылку без схемы use case дополнил до https://
+			URL:      "https://t.me/s/durov",
+			Title:    "Pavel Durov",
+			Articles: []domain.Article{{Link: "https://t.me/durov/1"}},
+		},
+	}}
+	sources := &fakeSourceWriter{}
+
+	src, _, err := NewAddSource(fetcher, sources, &fakeRepo{}, &fakeSubRepo{}).Run(context.Background(), 42, "t.me/durov")
+	if err != nil {
+		t.Fatalf("неожиданная ошибка: %v", err)
+	}
+	if src.URL != "https://t.me/s/durov" {
+		t.Errorf("источник должен храниться под каноническим адресом, получили %q", src.URL)
+	}
+}
+
 func TestAddSource_Errors(t *testing.T) {
 	disabled := &fakeSourceWriter{byURL: map[string]domain.Source{feedURL: {ID: 1, URL: feedURL, Active: false}}}
 

@@ -19,7 +19,7 @@ type SourceWriter interface {
 
 var (
 	ErrInvalidURL     = errors.New("некорректная ссылка")
-	ErrNotAFeed       = errors.New("по ссылке нет RSS-ленты")
+	ErrNotAFeed       = errors.New("по ссылке нет ленты новостей")
 	ErrSourceDisabled = errors.New("источник отключён")
 )
 
@@ -52,6 +52,11 @@ func (uc *AddSource) Run(ctx context.Context, chatID int64, rawURL string) (doma
 	if len(feed.Articles) == 0 {
 		return domain.Source{}, false, fmt.Errorf("%w: лента пустая", ErrNotAFeed)
 	}
+	// Адаптер может вернуть канонический адрес — храним источник под ним,
+	// чтобы разные формы одной ссылки не превратились в разные источники.
+	if feed.URL != "" {
+		feedURL = feed.URL
+	}
 
 	src, created, err := uc.sources.AddSource(ctx, feedURL, feed.Title)
 	if err != nil {
@@ -80,9 +85,15 @@ func (uc *AddSource) Run(ctx context.Context, chatID int64, rawURL string) (doma
 }
 
 // normalizeFeedURL проверяет, что строка — абсолютная http(s)-ссылка.
+// Ссылку без схемы («t.me/durov», «habr.com/rss») дополняет до https://.
 func normalizeFeedURL(raw string) (string, error) {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+	raw = strings.TrimSpace(raw)
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	u, err := url.Parse(raw)
+	// Точка в домене обязательна: иначе «привет» превратился бы в «https://привет».
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || !strings.Contains(u.Hostname(), ".") {
 		return "", ErrInvalidURL
 	}
 	u.Fragment = "" // часть после # сервер всё равно не получает

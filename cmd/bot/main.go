@@ -11,9 +11,11 @@ import (
 	"syscall"
 	"time"
 
+	"PetProjectClaude/internal/adapter/feedrouter"
 	"PetProjectClaude/internal/adapter/postgres"
 	"PetProjectClaude/internal/adapter/rss"
 	"PetProjectClaude/internal/adapter/telegram"
+	"PetProjectClaude/internal/adapter/tgchannel"
 	"PetProjectClaude/internal/config"
 	"PetProjectClaude/internal/usecase"
 )
@@ -43,8 +45,8 @@ func main() {
 
 	// Адаптер хранилища реализует сразу несколько интерфейсов use case'ов.
 	repo := postgres.NewRepository(pool)
-	// RSS-адаптер нужен боту для проверки лент, которые добавляют пользователи (/add).
-	fetcher := rss.NewClient(cfg.RequestTimeout)
+	// Адаптеры лент нужны боту для проверки источников, которые добавляют пользователи (/add).
+	fetcher := feedrouter.New(rss.NewClient(cfg.RequestTimeout), tgchannel.NewClient(cfg.RequestTimeout))
 
 	tg, err := telegram.New(cfg.TelegramToken, telegram.UseCases{
 		Latest:        usecase.NewLatestNews(repo),

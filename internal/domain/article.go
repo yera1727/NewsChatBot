@@ -39,6 +39,9 @@ type Article struct {
 
 // Feed — содержимое ленты, как его вернул источник.
 type Feed struct {
+	// URL — канонический адрес ленты, если он отличается от запрошенного
+	// (например, t.me/durov → t.me/s/durov). Пусто — совпадает с запрошенным.
+	URL      string
 	Title    string
 	Articles []Article
 }

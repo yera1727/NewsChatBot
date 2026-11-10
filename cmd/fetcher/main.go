@@ -11,8 +11,10 @@ import (
 	"syscall"
 	"time"
 
+	"PetProjectClaude/internal/adapter/feedrouter"
 	"PetProjectClaude/internal/adapter/postgres"
 	"PetProjectClaude/internal/adapter/rss"
+	"PetProjectClaude/internal/adapter/tgchannel"
 	"PetProjectClaude/internal/config"
 	"PetProjectClaude/internal/usecase"
 )
@@ -42,7 +44,8 @@ func main() {
 	defer pool.Close()
 
 	// Адаптеры (внешний слой).
-	fetcher := rss.NewClient(cfg.RequestTimeout)
+	// Router сам выбирает адаптер по адресу: t.me → Telegram-канал, остальное → RSS.
+	fetcher := feedrouter.New(rss.NewClient(cfg.RequestTimeout), tgchannel.NewClient(cfg.RequestTimeout))
 	repo := postgres.NewRepository(pool)
 
 	// Начальное заполнение (seed): ленты из конфига добавляются в таблицу sources,
