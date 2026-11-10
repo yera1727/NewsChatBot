@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"html"
 	"log/slog"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -142,15 +141,16 @@ func (b *Bot) sources(ctx context.Context) (string, error) {
 
 	var sb strings.Builder
 	sb.WriteString("<b>Источники</b>\n\n")
-	for i, s := range sources {
-		fmt.Fprintf(&sb, "%d. %s\n", i+1, sourceName(s))
+	// Номер — это ID источника в БД: он не меняется, когда добавляются новые источники.
+	for _, s := range sources {
+		fmt.Fprintf(&sb, "%d. %s\n", s.ID, sourceName(s))
 	}
-	sb.WriteString("\nПодписаться: /subscribe 1")
+	fmt.Fprintf(&sb, "\nПодписаться: /subscribe %d", sources[0].ID)
 	return sb.String(), nil
 }
 
 func (b *Bot) subscribe(ctx context.Context, chatID int64, arg string) (string, error) {
-	n, err := strconv.Atoi(arg)
+	n, err := strconv.ParseInt(arg, 10, 64)
 	if err != nil {
 		return "Укажите номер источника из /sources, например: /subscribe 1", nil
 	}
@@ -165,9 +165,9 @@ func (b *Bot) subscribe(ctx context.Context, chatID int64, arg string) (string, 
 }
 
 func (b *Bot) unsubscribe(ctx context.Context, chatID int64, arg string) (string, error) {
-	n, err := strconv.Atoi(arg)
+	n, err := strconv.ParseInt(arg, 10, 64)
 	if err != nil {
-		return "Укажите номер источника из /sources, например: /unsubscribe 1", nil
+		return "Укажите номер источника из /my, например: /unsubscribe 1", nil
 	}
 	source, err := b.subs.Unsubscribe(ctx, chatID, n)
 	if errors.Is(err, usecase.ErrUnknownSource) {
@@ -191,8 +191,9 @@ func (b *Bot) my(ctx context.Context, chatID int64) (string, error) {
 	var sb strings.Builder
 	sb.WriteString("<b>Ваши подписки</b>\n\n")
 	for _, s := range sources {
-		fmt.Fprintf(&sb, "• %s\n", sourceName(s))
+		fmt.Fprintf(&sb, "%d. %s\n", s.ID, sourceName(s))
 	}
+	fmt.Fprintf(&sb, "\nОтписаться: /unsubscribe %d", sources[0].ID)
 	return sb.String(), nil
 }
 
@@ -224,13 +225,9 @@ func parseCommand(text string) (cmd, arg string) {
 	return strings.ToLower(cmd), arg
 }
 
-// sourceName превращает URL ленты в короткое имя: "https://habr.com/ru/rss/..." → "habr.com".
-func sourceName(source string) string {
-	u, err := url.Parse(source)
-	if err != nil || u.Host == "" {
-		return html.EscapeString(source)
-	}
-	return html.EscapeString(strings.TrimPrefix(u.Host, "www."))
+// sourceName — имя источника, безопасное для вставки в HTML-сообщение.
+func sourceName(s domain.Source) string {
+	return html.EscapeString(s.Name())
 }
 
 // cleanErr убирает токен из текста ошибки. Сетевые ошибки net/http содержат

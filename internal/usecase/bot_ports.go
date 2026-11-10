@@ -13,23 +13,29 @@ import (
 // ArticleReader — чтение сохранённых новостей.
 type ArticleReader interface {
 	Latest(ctx context.Context, limit int) ([]domain.Article, error)
-	// Sources возвращает все известные источники в стабильном порядке.
-	Sources(ctx context.Context) ([]string, error)
+}
+
+// SourceReader — чтение источников.
+type SourceReader interface {
+	// Sources возвращает активные источники, упорядоченные по ID.
+	Sources(ctx context.Context) ([]domain.Source, error)
+	// SourceByID возвращает источник (в том числе неактивный) или ErrUnknownSource.
+	SourceByID(ctx context.Context, id int64) (domain.Source, error)
 }
 
 // SubscriptionRepository — хранение подписок и прогресса доставки.
 type SubscriptionRepository interface {
 	// Subscribe подписывает чат на источник. Старые статьи считаются уже доставленными,
 	// чтобы новый подписчик не получил сотни сообщений разом.
-	Subscribe(ctx context.Context, chatID int64, source string) error
-	Unsubscribe(ctx context.Context, chatID int64, source string) error
+	Subscribe(ctx context.Context, chatID, sourceID int64) error
+	Unsubscribe(ctx context.Context, chatID, sourceID int64) error
 	UnsubscribeAll(ctx context.Context, chatID int64) error
-	ListByChat(ctx context.Context, chatID int64) ([]string, error)
+	ListByChat(ctx context.Context, chatID int64) ([]domain.Source, error)
 
 	// Pending возвращает ещё не доставленные новости по всем подпискам, старые первыми.
 	Pending(ctx context.Context, limit int) ([]domain.Delivery, error)
 	// MarkDelivered запоминает, что статья articleID (и все до неё) доставлена.
-	MarkDelivered(ctx context.Context, chatID int64, source string, articleID int64) error
+	MarkDelivered(ctx context.Context, chatID, sourceID, articleID int64) error
 }
 
 // Notifier — отправка новости пользователю (сейчас Telegram).
@@ -38,7 +44,8 @@ type Notifier interface {
 }
 
 // Ошибки бизнес-логики. Адаптеры переводят в них свои ошибки (например, ответ 403
-// от Telegram), а use case'ы проверяют их через errors.Is — не зная о Telegram.
+// от Telegram или «строка не найдена» от БД), а use case'ы проверяют их через
+// errors.Is — не зная ни о Telegram, ни о PostgreSQL.
 var (
 	ErrUnknownSource   = errors.New("неизвестный источник")
 	ErrChatUnavailable = errors.New("чат недоступен") // пользователь заблокировал бота

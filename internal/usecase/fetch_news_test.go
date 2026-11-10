@@ -12,13 +12,30 @@ import (
 // Главный плюс Clean Architecture: use case тестируется без интернета и БД.
 // Подставляем «фейковые» реализации интерфейсов.
 
-type fakeSource struct {
-	data map[string][]domain.Article
-	errs map[string]error
+type fakeFetcher struct {
+	feeds map[string]domain.Feed
+	errs  map[string]error
 }
 
-func (f *fakeSource) Fetch(_ context.Context, url string) ([]domain.Article, error) {
-	return f.data[url], f.errs[url]
+func (f *fakeFetcher) Fetch(_ context.Context, url string) (domain.Feed, error) {
+	return f.feeds[url], f.errs[url]
+}
+
+type fakeSources struct {
+	list   []domain.Source
+	titles map[int64]string // какие названия выставил use case
+}
+
+func (f *fakeSources) ActiveSources(context.Context) ([]domain.Source, error) {
+	return f.list, nil
+}
+
+func (f *fakeSources) UpdateSourceTitle(_ context.Context, id int64, title string) error {
+	if f.titles == nil {
+		f.titles = make(map[int64]string)
+	}
+	f.titles[id] = title
+	return nil
 }
 
 // fakeRepo ведёт себя как настоящая БД: статью с уже известной ссылкой не сохраняет.
@@ -44,18 +61,16 @@ func (f *fakeRepo) Save(_ context.Context, articles []domain.Article) (int, erro
 }
 
 func TestFetchNews_OneFeedFails_OthersStillSaved(t *testing.T) {
-	source := &fakeSource{
-		data: map[string][]domain.Article{
-			"good": {{Link: "l1"}, {Link: "l2"}},
+	fetcher := &fakeFetcher{
+		feeds: map[string]domain.Feed{
+			"good": {Articles: []domain.Article{{Link: "l1"}, {Link: "l2"}}},
 		},
-		errs: map[string]error{
-			"bad": errors.New("сайт недоступен"),
-		},
+		errs: map[string]error{"bad": errors.New("сайт недоступен")},
 	}
+	sources := &fakeSources{list: []domain.Source{{ID: 1, URL: "bad"}, {ID: 2, URL: "good"}}}
 	repo := &fakeRepo{}
 
-	uc := NewFetchNews(source, repo, []string{"bad", "good"})
-	added, err := uc.Run(context.Background())
+	added, err := NewFetchNews(fetcher, sources, repo).Run(context.Background())
 
 	if err == nil {
 		t.Error("ожидали ошибку от ленты bad, получили nil")
@@ -65,13 +80,42 @@ func TestFetchNews_OneFeedFails_OthersStillSaved(t *testing.T) {
 	}
 }
 
-func TestFetchNews_SecondRunFindsNothingNew(t *testing.T) {
-	source := &fakeSource{
-		data: map[string][]domain.Article{
-			"feed": {{Link: "l1"}, {Link: "l2"}},
-		},
+func TestFetchNews_ArticlesLinkedToSource_TitleUpdated(t *testing.T) {
+	fetcher := &fakeFetcher{feeds: map[string]domain.Feed{
+		"habr-url": {Title: "Хабр", Articles: []domain.Article{{Link: "l1"}}},
+	}}
+	sources := &fakeSources{list: []domain.Source{{ID: 7, URL: "habr-url"}}}
+	repo := &fakeRepo{}
+
+	if _, err := NewFetchNews(fetcher, sources, repo).Run(context.Background()); err != nil {
+		t.Fatalf("неожиданная ошибка: %v", err)
 	}
-	uc := NewFetchNews(source, &fakeRepo{}, []string{"feed"})
+
+	if sources.titles[7] != "Хабр" {
+		t.Errorf("название источника 7 должно обновиться на «Хабр», получили %q", sources.titles[7])
+	}
+	if got := repo.saved[0].Source; got.ID != 7 || got.Title != "Хабр" {
+		t.Errorf("статья должна быть привязана к источнику 7 «Хабр», получили %+v", got)
+	}
+}
+
+func TestFetchNews_SameTitle_NotUpdated(t *testing.T) {
+	fetcher := &fakeFetcher{feeds: map[string]domain.Feed{"u": {Title: "Хабр"}}}
+	sources := &fakeSources{list: []domain.Source{{ID: 1, URL: "u", Title: "Хабр"}}}
+
+	if _, err := NewFetchNews(fetcher, sources, &fakeRepo{}).Run(context.Background()); err != nil {
+		t.Fatalf("неожиданная ошибка: %v", err)
+	}
+	if len(sources.titles) != 0 {
+		t.Errorf("название не изменилось — лишний UPDATE не нужен, а он был: %v", sources.titles)
+	}
+}
+
+func TestFetchNews_SecondRunFindsNothingNew(t *testing.T) {
+	fetcher := &fakeFetcher{feeds: map[string]domain.Feed{
+		"feed": {Articles: []domain.Article{{Link: "l1"}, {Link: "l2"}}},
+	}}
+	uc := NewFetchNews(fetcher, &fakeSources{list: []domain.Source{{ID: 1, URL: "feed"}}}, &fakeRepo{})
 
 	if added, _ := uc.Run(context.Background()); added != 2 {
 		t.Errorf("первый запуск: ожидали 2 новые, получили %d", added)
@@ -81,20 +125,24 @@ func TestFetchNews_SecondRunFindsNothingNew(t *testing.T) {
 	}
 }
 
-// slowSource имитирует медленную сеть: каждая загрузка занимает delay.
-type slowSource struct {
+// slowFetcher имитирует медленную сеть: каждая загрузка занимает delay.
+type slowFetcher struct {
 	delay time.Duration
 }
 
-func (s *slowSource) Fetch(_ context.Context, url string) ([]domain.Article, error) {
+func (s *slowFetcher) Fetch(_ context.Context, url string) (domain.Feed, error) {
 	time.Sleep(s.delay)
-	return []domain.Article{{Link: url}}, nil
+	return domain.Feed{Articles: []domain.Article{{Link: url}}}, nil
 }
 
 func TestFetchNews_FeedsFetchedInParallel(t *testing.T) {
 	const delay = 200 * time.Millisecond
+	var list []domain.Source
+	for i, u := range []string{"a", "b", "c", "d", "e"} {
+		list = append(list, domain.Source{ID: int64(i + 1), URL: u})
+	}
 	repo := &fakeRepo{}
-	uc := NewFetchNews(&slowSource{delay: delay}, repo, []string{"a", "b", "c", "d", "e"})
+	uc := NewFetchNews(&slowFetcher{delay: delay}, &fakeSources{list: list}, repo)
 
 	start := time.Now()
 	if _, err := uc.Run(context.Background()); err != nil {

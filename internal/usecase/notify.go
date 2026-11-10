@@ -56,7 +56,7 @@ func (uc *NotifySubscribers) Run(ctx context.Context) (int, error) {
 			continue
 		}
 
-		if err := uc.repo.MarkDelivered(ctx, d.ChatID, d.Article.Source, d.Article.ID); err != nil {
+		if err := uc.repo.MarkDelivered(ctx, d.ChatID, d.Article.Source.ID, d.Article.ID); err != nil {
 			// Не смогли записать прогресс — останавливаемся, иначе разошлём дубли.
 			return sent, errors.Join(append(errs, fmt.Errorf("отметка доставки: %w", err))...)
 		}
