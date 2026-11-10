@@ -32,20 +32,28 @@ const helpText = `Привет! Я собираю новости из RSS-лен
 /sources — список источников
 /subscribe N — подписаться на источник номер N
 /unsubscribe N — отписаться
-/my — мои подписки`
+/my — мои подписки
+/add ссылка — добавить RSS-ленту или Telegram-канал (@имя)`
+
+// UseCases — сценарии, которые вызывает бот. Собраны в структуру, чтобы
+// конструктор не разрастался с каждой новой командой.
+type UseCases struct {
+	Latest        *usecase.LatestNews
+	Subscriptions *usecase.Subscriptions
+	AddSource     *usecase.AddSource
+}
 
 type Bot struct {
 	api    *bot.Bot
 	token  string
-	news   *usecase.LatestNews
-	subs   *usecase.Subscriptions
+	uc     UseCases
 	logger *slog.Logger
 }
 
 // New создаёт бота. Библиотека сразу вызывает метод getMe,
 // так что неверный токен обнаружится здесь, при старте.
-func New(token string, news *usecase.LatestNews, subs *usecase.Subscriptions, logger *slog.Logger) (*Bot, error) {
-	b := &Bot{token: token, news: news, subs: subs, logger: logger}
+func New(token string, uc UseCases, logger *slog.Logger) (*Bot, error) {
+	b := &Bot{token: token, uc: uc, logger: logger}
 
 	api, err := bot.New(token, bot.WithDefaultHandler(b.handle))
 	if err != nil {
@@ -99,6 +107,8 @@ func (b *Bot) handle(ctx context.Context, _ *bot.Bot, update *models.Update) {
 		reply, err = b.unsubscribe(ctx, chatID, arg)
 	case "/my":
 		reply, err = b.my(ctx, chatID)
+	case "/add":
+		reply, err = b.add(ctx, chatID, arg)
 	default:
 		reply = "Не знаю такой команды. Список команд: /help"
 	}
@@ -113,7 +123,7 @@ func (b *Bot) handle(ctx context.Context, _ *bot.Bot, update *models.Update) {
 }
 
 func (b *Bot) latest(ctx context.Context) (string, error) {
-	articles, err := b.news.Run(ctx, latestLimit)
+	articles, err := b.uc.Latest.Run(ctx, latestLimit)
 	if err != nil {
 		return "", err
 	}
@@ -131,7 +141,7 @@ func (b *Bot) latest(ctx context.Context) (string, error) {
 }
 
 func (b *Bot) sources(ctx context.Context) (string, error) {
-	sources, err := b.subs.Sources(ctx)
+	sources, err := b.uc.Subscriptions.Sources(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -154,7 +164,7 @@ func (b *Bot) subscribe(ctx context.Context, chatID int64, arg string) (string, 
 	if err != nil {
 		return "Укажите номер источника из /sources, например: /subscribe 1", nil
 	}
-	source, err := b.subs.Subscribe(ctx, chatID, n)
+	source, err := b.uc.Subscriptions.Subscribe(ctx, chatID, n)
 	if errors.Is(err, usecase.ErrUnknownSource) {
 		return fmt.Sprintf("Нет источника с номером %d. Список: /sources", n), nil
 	}
@@ -169,7 +179,7 @@ func (b *Bot) unsubscribe(ctx context.Context, chatID int64, arg string) (string
 	if err != nil {
 		return "Укажите номер источника из /my, например: /unsubscribe 1", nil
 	}
-	source, err := b.subs.Unsubscribe(ctx, chatID, n)
+	source, err := b.uc.Subscriptions.Unsubscribe(ctx, chatID, n)
 	if errors.Is(err, usecase.ErrUnknownSource) {
 		return fmt.Sprintf("Нет источника с номером %d. Список: /sources", n), nil
 	}
@@ -180,7 +190,7 @@ func (b *Bot) unsubscribe(ctx context.Context, chatID int64, arg string) (string
 }
 
 func (b *Bot) my(ctx context.Context, chatID int64) (string, error) {
-	sources, err := b.subs.List(ctx, chatID)
+	sources, err := b.uc.Subscriptions.List(ctx, chatID)
 	if err != nil {
 		return "", err
 	}
@@ -195,6 +205,40 @@ func (b *Bot) my(ctx context.Context, chatID int64) (string, error) {
 	}
 	fmt.Fprintf(&sb, "\nОтписаться: /unsubscribe %d", sources[0].ID)
 	return sb.String(), nil
+}
+
+func (b *Bot) add(ctx context.Context, chatID int64, arg string) (string, error) {
+	if arg == "" {
+		return "Пришлите ссылку на RSS-ленту или Telegram-канал, например:\n" +
+			"/add https://habr.com/ru/rss/news/\n/add @durov", nil
+	}
+
+	// «@канал» — привычная в Telegram запись, превращаем её в ссылку.
+	if name, ok := strings.CutPrefix(arg, "@"); ok {
+		arg = "https://t.me/" + name
+	}
+
+	src, created, err := b.uc.AddSource.Run(ctx, chatID, arg)
+	switch {
+	case errors.Is(err, usecase.ErrInvalidURL):
+		return "Это не похоже на ссылку. Нужен адрес вида https://example.com/rss", nil
+	case errors.Is(err, usecase.ErrNotAFeed):
+		// Причину пишем в лог, а пользователю — понятное объяснение.
+		b.logger.Info("не удалось добавить ленту", "chat", chatID, "url", arg, "err", err)
+		return "Не получилось прочитать ленту по этой ссылке.\n\n" +
+			"• Для сайта нужна именно RSS-лента, а не обычная страница (часто она лежит по адресу вида /rss или /feed).\n" +
+			"• Для Telegram подходят только публичные каналы с постами: @имя или t.me/имя.", nil
+	case errors.Is(err, usecase.ErrSourceDisabled):
+		return "Этот источник отключён и недоступен для подписки.", nil
+	case err != nil:
+		return "", err
+	}
+
+	if created {
+		return fmt.Sprintf("✅ Добавлен новый источник: <b>%s</b> (номер %d).\nВы на него подписаны — новые статьи будут приходить сюда.",
+			sourceName(src), src.ID), nil
+	}
+	return fmt.Sprintf("Источник <b>%s</b> уже есть (номер %d). Вы на него подписаны.", sourceName(src), src.ID), nil
 }
 
 // send отправляет HTML-сообщение. preview — показывать ли превью ссылки.

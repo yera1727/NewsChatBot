@@ -6,10 +6,12 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
 
+	"PetProjectClaude/internal/adapter/safehttp"
 	"PetProjectClaude/internal/domain"
 )
 
@@ -35,7 +37,8 @@ type Client struct {
 }
 
 func NewClient(timeout time.Duration) *Client {
-	return &Client{http: &http.Client{Timeout: timeout}}
+	// Ленты добавляют пользователи — поэтому клиент с защитой от SSRF.
+	return &Client{http: safehttp.NewClient(timeout)}
 }
 
 // Fetch скачивает ленту и переводит её в доменную модель.
@@ -59,7 +62,7 @@ func (c *Client) Fetch(ctx context.Context, feedURL string) (domain.Feed, error)
 	}
 
 	var feed rssFeed
-	if err := xml.NewDecoder(resp.Body).Decode(&feed); err != nil {
+	if err := xml.NewDecoder(io.LimitReader(resp.Body, safehttp.MaxBodySize)).Decode(&feed); err != nil {
 		return domain.Feed{}, fmt.Errorf("разбор XML %s: %w", feedURL, err)
 	}
 

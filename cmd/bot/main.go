@@ -11,8 +11,11 @@ import (
 	"syscall"
 	"time"
 
+	"PetProjectClaude/internal/adapter/feedrouter"
 	"PetProjectClaude/internal/adapter/postgres"
+	"PetProjectClaude/internal/adapter/rss"
 	"PetProjectClaude/internal/adapter/telegram"
+	"PetProjectClaude/internal/adapter/tgchannel"
 	"PetProjectClaude/internal/config"
 	"PetProjectClaude/internal/usecase"
 )
@@ -42,11 +45,14 @@ func main() {
 
 	// Адаптер хранилища реализует сразу несколько интерфейсов use case'ов.
 	repo := postgres.NewRepository(pool)
+	// Адаптеры лент нужны боту для проверки источников, которые добавляют пользователи (/add).
+	fetcher := feedrouter.New(rss.NewClient(cfg.RequestTimeout), tgchannel.NewClient(cfg.RequestTimeout))
 
-	latest := usecase.NewLatestNews(repo)
-	subs := usecase.NewSubscriptions(repo, repo)
-
-	tg, err := telegram.New(cfg.TelegramToken, latest, subs, logger)
+	tg, err := telegram.New(cfg.TelegramToken, telegram.UseCases{
+		Latest:        usecase.NewLatestNews(repo),
+		Subscriptions: usecase.NewSubscriptions(repo, repo),
+		AddSource:     usecase.NewAddSource(fetcher, repo, repo, repo),
+	}, logger)
 	if err != nil {
 		logger.Error("запуск Telegram-бота (проверьте токен)", "err", err)
 		os.Exit(1)
