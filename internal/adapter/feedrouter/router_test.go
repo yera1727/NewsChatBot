@@ -20,8 +20,8 @@ func TestRouter(t *testing.T) {
 	for url, want := range map[string]string{
 		"https://t.me/durov":              "telegram",
 		"https://telegram.me/s/durov":     "telegram",
-		"https://habr.com/ru/rss/news/":   "rss",
-		"https://lenta.ru/rss/news":       "rss",
+		"https://example.com/rss":         "rss",
+		"https://news.example.org/feed":   "rss",
 		"https://example.com/t.me/durov/": "rss", // t.me в пути, а не в домене
 	} {
 		feed, _ := r.Fetch(context.Background(), url)

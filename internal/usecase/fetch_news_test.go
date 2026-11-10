@@ -82,26 +82,26 @@ func TestFetchNews_OneFeedFails_OthersStillSaved(t *testing.T) {
 
 func TestFetchNews_ArticlesLinkedToSource_TitleUpdated(t *testing.T) {
 	fetcher := &fakeFetcher{feeds: map[string]domain.Feed{
-		"habr-url": {Title: "Хабр", Articles: []domain.Article{{Link: "l1"}}},
+		"feed-url": {Title: "Новости дня", Articles: []domain.Article{{Link: "l1"}}},
 	}}
-	sources := &fakeSources{list: []domain.Source{{ID: 7, URL: "habr-url"}}}
+	sources := &fakeSources{list: []domain.Source{{ID: 7, URL: "feed-url"}}}
 	repo := &fakeRepo{}
 
 	if _, err := NewFetchNews(fetcher, sources, repo).Run(context.Background()); err != nil {
 		t.Fatalf("неожиданная ошибка: %v", err)
 	}
 
-	if sources.titles[7] != "Хабр" {
-		t.Errorf("название источника 7 должно обновиться на «Хабр», получили %q", sources.titles[7])
+	if sources.titles[7] != "Новости дня" {
+		t.Errorf("название источника 7 должно обновиться на «Новости дня», получили %q", sources.titles[7])
 	}
-	if got := repo.saved[0].Source; got.ID != 7 || got.Title != "Хабр" {
-		t.Errorf("статья должна быть привязана к источнику 7 «Хабр», получили %+v", got)
+	if got := repo.saved[0].Source; got.ID != 7 || got.Title != "Новости дня" {
+		t.Errorf("статья должна быть привязана к источнику 7 «Новости дня», получили %+v", got)
 	}
 }
 
 func TestFetchNews_SameTitle_NotUpdated(t *testing.T) {
-	fetcher := &fakeFetcher{feeds: map[string]domain.Feed{"u": {Title: "Хабр"}}}
-	sources := &fakeSources{list: []domain.Source{{ID: 1, URL: "u", Title: "Хабр"}}}
+	fetcher := &fakeFetcher{feeds: map[string]domain.Feed{"u": {Title: "Новости дня"}}}
+	sources := &fakeSources{list: []domain.Source{{ID: 1, URL: "u", Title: "Новости дня"}}}
 
 	if _, err := NewFetchNews(fetcher, sources, &fakeRepo{}).Run(context.Background()); err != nil {
 		t.Fatalf("неожиданная ошибка: %v", err)
