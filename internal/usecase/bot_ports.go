@@ -12,7 +12,8 @@ import (
 
 // ArticleReader — чтение сохранённых новостей.
 type ArticleReader interface {
-	Latest(ctx context.Context, limit int) ([]domain.Article, error)
+	// LatestForChat возвращает самые свежие статьи из источников, на которые подписан чат.
+	LatestForChat(ctx context.Context, chatID int64, limit int) ([]domain.Article, error)
 }
 
 // SourceReader — чтение источников.
@@ -48,5 +49,6 @@ type Notifier interface {
 // errors.Is — не зная ни о Telegram, ни о PostgreSQL.
 var (
 	ErrUnknownSource   = errors.New("неизвестный источник")
+	ErrNoSubscriptions = errors.New("нет подписок")
 	ErrChatUnavailable = errors.New("чат недоступен") // пользователь заблокировал бота
 )

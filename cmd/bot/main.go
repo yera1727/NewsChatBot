@@ -49,7 +49,7 @@ func main() {
 	fetcher := feedrouter.New(rss.NewClient(cfg.RequestTimeout), tgchannel.NewClient(cfg.RequestTimeout))
 
 	tg, err := telegram.New(cfg.TelegramToken, telegram.UseCases{
-		Latest:        usecase.NewLatestNews(repo),
+		Latest:        usecase.NewLatestNews(repo, repo),
 		Subscriptions: usecase.NewSubscriptions(repo, repo),
 		AddSource:     usecase.NewAddSource(fetcher, repo, repo, repo),
 	}, logger)
