@@ -5,9 +5,13 @@ package rss
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"strings"
+	"syscall"
 	"time"
 
 	"PetProjectClaude/internal/domain"
@@ -29,13 +33,45 @@ type rssFeed struct {
 	} `xml:"channel"`
 }
 
+// maxFeedSize — сколько байт максимум читаем из ответа. Защита от огромных
+// (или бесконечных) ответов, которые съели бы всю память.
+const maxFeedSize = 10 << 20 // 10 МБ
+
+var errForbiddenAddress = errors.New("адреса внутренней сети запрещены")
+
 // Client скачивает RSS-ленты.
 type Client struct {
 	http *http.Client
 }
 
 func NewClient(timeout time.Duration) *Client {
-	return &Client{http: &http.Client{Timeout: timeout}}
+	// Ленты теперь добавляют пользователи, поэтому запрещаем ходить во внутреннюю сеть
+	// (localhost, 10.x, 192.168.x, 169.254.x и т.п.). Иначе через бота можно было бы
+	// обращаться к сервисам, закрытым от интернета, — это атака SSRF.
+	//
+	// Проверка стоит в Control: он вызывается для КАЖДОГО соединения уже после
+	// DNS-резолва, поэтому её не обойти ни редиректом, ни DNS-записью на 127.0.0.1.
+	dialer := &net.Dialer{Timeout: 5 * time.Second, Control: blockInternalAddresses}
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = dialer.DialContext
+	transport.Proxy = nil // через прокси проверялся бы адрес прокси, а не сайта
+
+	return &Client{http: &http.Client{Timeout: timeout, Transport: transport}}
+}
+
+// blockInternalAddresses запрещает соединения с локальными и внутренними IP.
+func blockInternalAddresses(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return err
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
+		return fmt.Errorf("%w: %s", errForbiddenAddress, host)
+	}
+	return nil
 }
 
 // Fetch скачивает ленту и переводит её в доменную модель.
@@ -59,7 +95,7 @@ func (c *Client) Fetch(ctx context.Context, feedURL string) (domain.Feed, error)
 	}
 
 	var feed rssFeed
-	if err := xml.NewDecoder(resp.Body).Decode(&feed); err != nil {
+	if err := xml.NewDecoder(io.LimitReader(resp.Body, maxFeedSize)).Decode(&feed); err != nil {
 		return domain.Feed{}, fmt.Errorf("разбор XML %s: %w", feedURL, err)
 	}
 
